@@ -275,15 +275,119 @@ class BrowserManager {
       await this.page.goto(targetUrl, { timeout: 120000, waitUntil: 'networkidle' });
       this.logger.info('[浏览器] 网页加载完成，正在注入客户端脚本...');
 
-      this.logger.info('[浏览器] 正在点击 "Code" 按钮以切换到代码视图...');
-      await this.page.getByRole('button', { name: 'Code' }).click();
-      this.logger.info('[浏览器] 已切换到代码视图。');
+      // 新增：网页加载完成后等待5秒，然后执行坐标(100, 100)的点击事件
+      this.logger.info('[浏览器] 网页加载完成，等待5秒后执行弹窗点击事件...');
+      await this.page.waitForTimeout(5000);
+      this.logger.info('[浏览器] 正在跳过弹窗...');
+      await this.page.mouse.click(100, 100);
+      this.logger.info('[浏览器] 弹窗点击事件已完成。');
 
+      this.logger.info('[浏览器] 正在持续点击 "Code" 按钮直到编辑器可见...');
+      
+      // 等待Code按钮可见并可点击
+      const codeButton = this.page.getByRole('button', { name: 'Code' });
+      await codeButton.waitFor({ state: 'visible', timeout: 30000 });
+      this.logger.info('[浏览器] Code按钮已可见，开始持续点击...');
+      
       const editorContainerLocator = this.page.locator('div.monaco-editor').first();
+      let editorVisible = false;
+      let clickCount = 0;
+      const maxClicks = 120; // 增加最大点击次数，防止无限循环
+      const clickInterval = 300; // 减少点击间隔，更频繁地点击
+      
+      // 持续点击Code按钮直到编辑器可见
+      while (!editorVisible && clickCount < maxClicks) {
+        try {
+          // 先检查编辑器是否已经可见，避免不必要的点击
+          try {
+            await editorContainerLocator.waitFor({ state: 'attached', timeout: 100 });
+            await editorContainerLocator.waitFor({ state: 'visible', timeout: 100 });
+            editorVisible = true;
+            this.logger.info(`[浏览器] 编辑器已可见！总共点击了${clickCount}次Code按钮`);
+            break;
+          } catch (e) {
+            // 编辑器还不可见，继续点击
+          }
+          
+          // 点击Code按钮 - 使用更强制的点击方式
+          await codeButton.click({ force: true, timeout: 5000 });
+          clickCount++;
+          
+          // 每次点击后立即检查编辑器状态
+          if (clickCount % 3 === 0) {
+            this.logger.info(`[浏览器] 第${clickCount}次点击Code按钮，继续检查编辑器状态...`);
+          }
+          
+          // 等待较短时间后继续
+          await this.page.waitForTimeout(clickInterval);
+          
+        } catch (error) {
+          this.logger.warn(`[浏览器] 第${clickCount}次点击Code按钮时出错: ${error.message}`);
+          // 如果点击失败，等待稍长时间再继续
+          await this.page.waitForTimeout(1000);
+          
+          // 尝试重新获取按钮引用
+          try {
+            await codeButton.waitFor({ state: 'visible', timeout: 5000 });
+          } catch (e) {
+            this.logger.warn('[浏览器] Code按钮可能暂时不可见，继续尝试...');
+          }
+        }
+      }
+      
+      if (!editorVisible) {
+        this.logger.error(`[浏览器] 达到最大点击次数(${maxClicks})，但编辑器仍未可见`);
+        this.logger.info('[浏览器] 尝试最后的强制策略...');
+        
+        // 尝试多种策略来激活编辑器
+        try {
+          // 策略1: 尝试键盘快捷键
+          this.logger.info('[浏览器] 尝试使用键盘快捷键激活编辑器...');
+          await this.page.keyboard.press('Escape'); // 先按ESC清除可能的弹窗
+          await this.page.waitForTimeout(500);
+          
+          // 策略2: 尝试点击页面其他区域后再点击Code按钮
+          this.logger.info('[浏览器] 尝试点击页面其他区域后再次点击Code按钮...');
+          await this.page.mouse.click(640, 360); // 点击页面中心
+          await this.page.waitForTimeout(500);
+          await codeButton.click({ force: true });
+          await this.page.waitForTimeout(1000);
+          
+          // 策略3: 检查是否有其他可能的编辑器选择器
+          const alternativeSelectors = [
+            '.monaco-editor',
+            '[data-testid="code-editor"]',
+            '.code-editor',
+            '.editor-container'
+          ];
+          
+          for (const selector of alternativeSelectors) {
+            try {
+              const altEditor = this.page.locator(selector).first();
+              await altEditor.waitFor({ state: 'visible', timeout: 2000 });
+              this.logger.info(`[浏览器] 找到替代编辑器选择器: ${selector}`);
+              editorVisible = true;
+              break;
+            } catch (e) {
+              // 继续尝试下一个选择器
+            }
+          }
+          
+          if (!editorVisible) {
+            // 最后尝试等待原始编辑器
+            this.logger.info('[浏览器] 最后尝试等待编辑器附加到DOM，最长60秒...');
+            await editorContainerLocator.waitFor({ state: 'attached', timeout: 60000 });
+            this.logger.info('[浏览器] 编辑器已附加。');
 
-      this.logger.info('[浏览器] 等待编辑器附加到DOM，最长120秒...');
-      await editorContainerLocator.waitFor({ state: 'attached', timeout: 120000 });
-      this.logger.info('[浏览器] 编辑器已附加。');
+            this.logger.info('[浏览器] 最后尝试等待编辑器可见状态，最长30秒...');
+            await editorContainerLocator.waitFor({ state: 'visible', timeout: 30000 });
+            this.logger.info('[浏览器] 编辑器已可见。');
+          }
+        } catch (finalError) {
+          this.logger.error(`[浏览器] 所有策略都失败了: ${finalError.message}`);
+          throw new Error(`无法激活编辑器: ${finalError.message}`);
+        }
+      }
 
       this.logger.info('[浏览器] 等待5秒，之后将在页面下方执行一次模拟点击以确保页面激活...');
       await this.page.waitForTimeout(5000);
@@ -1844,3 +1948,4 @@ if (require.main === module) {
 }
 
 module.exports = { ProxyServerSystem, BrowserManager, initializeServer };
+
