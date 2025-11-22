@@ -388,7 +388,6 @@ class RequestHandler {
     res.set('Connection', 'keep-alive');
     
     this.failureCount = 0;
-
       while (true) {
         const msg = await queue.dequeue(30000);
         if (msg.type === 'STREAM_END') break;
@@ -688,5 +687,6 @@ class ProxyServerSystem extends EventEmitter {
 
 if (require.main === module) new ProxyServerSystem().start();
 module.exports = { ProxyServerSystem };
+
 
 
